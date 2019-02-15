@@ -1,78 +1,64 @@
 #!/bin/bash
 
-#user runs opencv_haartraing before this one
-
-#TODO: put output in logfile, account for &
-#TODO: recored nohup output
-#TODO: deal with errors
-
 #check args
-if [ $# -lt 1 ];then
-        echo "Usage: $0 <email>"
+if [ $# -lt 2 ];then
+        echo "Usage: $0 <email> <model name>"
         exit 1
 fi
 
-#check if nohup was used
-if [ ! -f ./nohup.out ];then
-        echo "Error: nohup.out does not exist"
-        exit 1
-fi
+#set up and constants
+NOTHING_DONE_LIMIT=288 #= 86400/300 = 24 hours / 5 mins
+SLEEP_TIME=300 #seconds / 1 min
+EMAIL=$1
+MODEL_NAME=$2
+OUTPUT_FILE=$MODEL_NAME/$MODEL_NAME.txt
+mkdir $MODEL_NAME
+touch $OUTPUT_FILE
 
-#get PID
-PID=$(ps -u $USER | grep "opencv_haartrai" | awk '{print $1}')
-
-#check if opencv_haartraining is currently running
-if [ -z $PID ];then
-        echo "Error: opencv_haartraining is not running"
-        exit 1
-fi
+#run the cascade classifier training program
+nohup opencv_haartraining -data $MODEL_NAME -vec data.vec -bg negative.txt -npos 2500
+0 -nneg 7500 -nstages 25 -mem 512 -mode BASIC -bt GAB > $OUTPUT_FILE 2>&1 &
+PID=$!
 
 #monitor while opencv_haartraining is alive
-timeElasped=0 #seconds
-sleepTime=1 #300 seconds
+elapsedSeconds=0
 status=0 #default 0
-prevNohupLines=$(wc -l ./nohup.out)
+prevOutputLines=$(wc -l $OUTPUT_FILE | cut -f1 -d ' ')
 nothingDoneCount=0
 
 while [ -n "$(ls /proc/$PID)" ]
 do
-        sleep $sleepTime
-        let timeElapsed+=sleepTime
-        echo "Time Elapsed: $timeElapsed"
+        sleep $SLEEP_TIME
+        let elapsedSeconds+=SLEEP_TIME
 
         #check if done nothing in 24 hours
-        currNohupLines=$(wc -l ./nohup.out)
-        if [ "$prevNohupLines" -eq "$currNohupLines" ];then
+        let currOutputLines=$(wc -l $OUTPUT_FILE | cut -f1 -d ' ')
+        if [ "$prevOutputLines" -eq "$currOutputLines" ];then
                 let nothingDoneCount+=1
         else
                 let nothingDoneCount=0
         fi
-        let prevNohupLines=currNohupLines
+        let prevOutputLines=currOutputLines
 
-        echo "Nothing Done Count: $nothingDoneCount"
-
-        if [ $doNothingCount -gt 10 ];then #288 = 86400/300 = 24 hours / 5 minutes
+        if [ "$nothingDoneCount" -ge "$NOTHING_DONE_LIMIT" ];then
                 let status=1
                 break
         fi
 done
 
 #send email
-echo "The current cascade classifier model is complete" > message
-echo >> message
-echo "TIME_ELAPSED: $timeElapsed" >> message
-echo >> message
+printf "The current cascade classifier model is complete\n" > message
+elapsedHours=$(echo "scale=4; $elapsedSeconds / 3600" | bc)
+printf "Time elapsed: $elapsedSeconds seconds, $elapsedHours hours\n" >> message
 
-echo "Status: " >> message
+printf "Status: " >> message
 if [ $status -eq 1 ];then
-        echo "the model has not accomplished anything in the last 24 hours\n" >> message
+        printf "The model has not accomplished anything in the last 24 hours\n" >> message
 else
-        echo "the model has been completed successfully\n" >> message
+        echo "The model has been completed successfully\n" >> message
 fi
-echo >> message
 
-mailx -s "Cascade Classifier Model" $1 < message
+mailx -s "Cascade Classifier Model $MODEL_NAME" $EMAIL < message
 rm message
 
 exit 0
-
